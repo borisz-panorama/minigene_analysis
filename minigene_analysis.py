@@ -8,7 +8,7 @@ import functools
 import os
 import gzip
 
-import minigene_utils
+from minigene_analysis import minigene_utils
 
 class seq_run:
     def __init__(self, data_folder, f_adaptor, r_adaptor, target_seqs, sample_info_file, target_info_file,
