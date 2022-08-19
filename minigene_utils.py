@@ -4,6 +4,7 @@ import hashlib
 import gzip
 import matplotlib.pyplot as plt
 from collections import defaultdict
+import pysam
 
 plt.rcParams['pdf.fonttype'] = 42 #leaves most text as actual text in PDFs, not outlines
 
@@ -130,4 +131,14 @@ def summarize_abundant_read_pairs(read1_file, read2_file, output_file_name, outp
         for sequences, count in sorted(deduplicated_reads.items(), key=lambda x:x[1], reverse=True)[:output_number]:
             out_file.write(f'{sequences[0]}\t{sequences[1]}\t{count}\n')
 
-
+def count_transcript_reads_from_bam(bam_file_path):
+    #takes a transcript-centric bam file from STAR mapping and counts the number of paired reads mapping to each transcript
+    bam_file = pysam.AlignmentFile(bam_file_path, "rb")
+    transcript_names = bam_file.references
+    reads_per_transcript = defaultdict(int)
+    for transcript_name in transcript_names:
+        transcript_mapping_reads = bam_file.fetch(reference=transcript_name)
+        for read in [r for r in transcript_mapping_reads if (not r.is_secondary)]:
+            if read.is_proper_pair and read.is_read1:
+                reads_per_transcript[transcript_name] += 1
+    return reads_per_transcript

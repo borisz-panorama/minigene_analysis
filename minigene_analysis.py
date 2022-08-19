@@ -14,7 +14,7 @@ class seq_run:
     def __init__(self, data_folder, f_adaptor, r_adaptor, target_seqs, sample_info_file, target_info_file,
                  mdf_file='md5sum_list.txt', threads=4, cutadapt_global_out_dir = 'cutadapt_output',
                  star_index_folder = 'STAR_indices',mapped_folder = 'mapped_reads',
-                 assembled_folder = 'assembled_transcripts'):
+                 assembled_folder = 'assembled_transcripts', quant_folder='transcript_counts'):
         """
         Constructor for seq_run class which will hold information for the overall experiment
         """
@@ -26,6 +26,7 @@ class seq_run:
         self.cutadapt_out_dir = cutadapt_global_out_dir
         self.star_index_folder = star_index_folder
         self.mapped_folder = mapped_folder
+        self.quant_folder = quant_folder
         self.assembled_folder = assembled_folder
 
         #get info for all targets
@@ -54,6 +55,7 @@ class seq_run:
         self.split_and_trim_reads()
         self.map_reads()
         self.assemble_transcripts()
+        self.map_reads_for_quant()
         #minigene_utils.make_dir('tables')
         #self.make_tables('tables/20220719')
 
@@ -133,10 +135,10 @@ class seq_run:
 
                 command_parts = ['cutadapt', '--no-indels', '-g', 'file:%s' % (barfile_f_name), '-q', '30', '-m', '50',
                                  '-G', 'file:%s' % (barfile_r_name), '-e', '0', '-o', f_out, '-p', r_out, '--cores=4',
-                                 '--discard-untrimmed', '--max-n', '0', '--pair-filter=any', '--revcomp', read1_path, read2_path,
+                                 '--discard-untrimmed', '--max-n', '0', '--pair-filter=any', read1_path, read2_path,
                                  '>', log_file]
                 command = ' '.join(command_parts)
-                # print(command)
+                print(command)
                 os.system(command)
 
             # let sample objects know where to find fastq files
@@ -179,12 +181,32 @@ class seq_run:
             command = ' '.join(command_parts)
             print(command)
             os.system(command)
+            '''
             for sample in samples:
                 sample.quantify_transcripts_stringtie(self.assembled_folder, merged_output)
+            #now assemble the read counts for all of the samples for this reference into a single file using the
+            #prepDE.py script from JHU
+            #first assemble the gtf output for each sample into a single text file
+            with open('prepDE_samples_temp.txt', 'w') as f:
+                for sample in samples:
+                    f.write(f'{sample.sample_name}\t{sample.stringtie_quant}\n')
+            command_parts = ['python', 'prepDE.py3', '-i', 'prepDE_samples_temp.txt' ,f'-G {reference_gtf}',f'-o {merged_output}',
+                             'stringtie_merge_temp.txt']
+            command = ' '.join(command_parts)
+            print(command)
+            os.system(command)
+            '''
+
 
         #for sample in self.samples.values():
         #    sample.parse_stringtie_output()
 
+    def map_reads_for_quant(self):
+        minigene_utils.make_dir(self.quant_folder)
+        for reference in self.merged_stringtie_gtfs:
+            ref_gtf = self.merged_stringtie_gtfs[reference]
+            for sample in self.reference_to_samples[reference]:
+                sample.quant_reads_star(self.quant_folder, ref_gtf)
 
     def make_reference_gtfs(self):
         for reference_seq_name in self.target_info:
@@ -335,7 +357,7 @@ class sample:
             print(command)
             os.system(command)
 
-    def map_reads_star(self, mapped_folder):
+    def map_reads_star(self, mapped_folder, peOverlapNbasesMin=20, peOverlapMMp = .01):
         '''
         STAR --genomeDir /home/sanderson/largevolume/zcpan/Boris/GRCh37_star_gencode --alignEndsType EndToEnd  --sjdbGTFfile /home/sanderson/largevolume/zcpan/Boris/GRCh37_star_gencode/gencode.v19.annotation.gtf --outSAMtype BAM SortedByCoordinate --twopassMode Basic --readFilesCommand zcat --readFilesIn reads_1.fq.gz reads_2.fq.gz --runThreadN 4  --outFileNamePrefix file_name_prefix
         but zcat doesn't right work on osx
@@ -347,12 +369,15 @@ class sample:
         self.umapped_mate1 = os.path.join(mapped_folder, self.sample_name + 'Unmapped.out.mate1')
         self.umapped_mate2 = os.path.join(mapped_folder, self.sample_name + 'Unmapped.out.mate2')
         self.umapped_summary = os.path.join(mapped_folder, self.sample_name + '_abundant_unmapped.tsv')
-
+        self.splice_junctions = os.path.join(mapped_folder, self.sample_name + 'SJ.out.tab')
         #f'--sjdbGTFfile {self.ref_gtf}',
         if not minigene_utils.file_exists(self.sorted_bam):
             command_parts = ['STAR', '--genomeDir', self.genomeDir, '--alignEndsType EndToEnd',
                              '--outSAMtype BAM SortedByCoordinate',
                              '--twopassMode Basic', '--outReadsUnmapped Fastx', '--limitBAMsortRAM 10000000000',
+                             f'--peOverlapNbasesMin {peOverlapNbasesMin}'
+                             f'--peOverlapMMp {peOverlapMMp}'
+                             f'--alignEndsProtrude 30 ConcordantPair',
                              '--runThreadN %d' % (self.seq_run.threads),
                              '--readFilesIn %s %s' % (self.demuxed_f_reads, self.demuxed_r_reads),
                              '--outFileNamePrefix', self.mapped_reads_prefix,
@@ -366,6 +391,43 @@ class sample:
             os.system(command)
         minigene_utils.summarize_abundant_read_pairs(self.umapped_mate1, self.umapped_mate2, self.umapped_summary,
                                                      output_number=100)
+        # self.mapped_pairs = functools.reduce(lambda x, y: x + y, [ int(l.rstrip('\n').split('\t')[2]) for l in pysam.idxstats(pysam.AlignmentFile(self.sorted_bam, "rb")) ])
+    def quant_reads_star(self, quant_folder, merged_GTF, peOverlapNbasesMin=20, peOverlapMMp = .01, ):
+        '''
+        STAR --genomeDir /home/sanderson/largevolume/zcpan/Boris/GRCh37_star_gencode --alignEndsType EndToEnd  --sjdbGTFfile /home/sanderson/largevolume/zcpan/Boris/GRCh37_star_gencode/gencode.v19.annotation.gtf --outSAMtype BAM SortedByCoordinate --twopassMode Basic --readFilesCommand zcat --readFilesIn reads_1.fq.gz reads_2.fq.gz --runThreadN 4  --outFileNamePrefix file_name_prefix
+        but zcat doesn't right work on osx
+        '''
+
+        self.quant_mapping_log = os.path.join(quant_folder, self.sample_name + '.log')
+        self.quant_mapped_reads_prefix = os.path.join(quant_folder, self.sample_name)
+        self.quant_sorted_bam = os.path.join(quant_folder, self.sample_name + 'Aligned.sortedByCoord.out.bam')
+        self.quant_umapped_mate1 = os.path.join(quant_folder, self.sample_name + 'Unmapped.out.mate1')
+        self.quant_umapped_mate2 = os.path.join(quant_folder, self.sample_name + 'Unmapped.out.mate2')
+        self.quant_umapped_summary = os.path.join(quant_folder, self.sample_name + '_abundant_unmapped.tsv')
+        self.quant_splice_junctions = os.path.join(quant_folder, self.sample_name + 'SJ.out.tab')
+        if not minigene_utils.file_exists(self.quant_sorted_bam):
+            command_parts = ['STAR', '--genomeDir', self.genomeDir, '--alignEndsType EndToEnd',
+                             '--outSAMtype BAM SortedByCoordinate',
+                             '--quantMode TranscriptomeSAM GeneCounts',
+                             f'--sjdbGTFfile {merged_GTF}',
+                             f'--alignEndsProtrude 30 ConcordantPair',
+                             '--outReadsUnmapped Fastx', '--limitBAMsortRAM 10000000000',
+                             f'--peOverlapNbasesMin {peOverlapNbasesMin}'
+                             f'--peOverlapMMp {peOverlapMMp}'
+                             '--runThreadN %d' % (self.seq_run.threads),
+                             '--readFilesIn %s %s' % (self.demuxed_f_reads, self.demuxed_r_reads),
+                             '--outFileNamePrefix', self.quant_mapped_reads_prefix,
+                             '1>>', self.quant_mapping_log, '2>>', self.quant_mapping_log]
+            command = ' '.join(command_parts)
+            print(command)
+            os.system(command)
+            command_parts = ['samtools', 'index', self.sorted_bam]
+            command = ' '.join(command_parts)
+            print(command)
+            os.system(command)
+        minigene_utils.summarize_abundant_read_pairs(self.umapped_mate1, self.umapped_mate2, self.umapped_summary,
+                                                     output_number=100)
+        tx_counts = minigene_utils.count_transcript_reads_from_bam(self.quant_sorted_bam)
         # self.mapped_pairs = functools.reduce(lambda x, y: x + y, [ int(l.rstrip('\n').split('\t')[2]) for l in pysam.idxstats(pysam.AlignmentFile(self.sorted_bam, "rb")) ])
 
     def assemble_transcripts_stringtie(self, assembled_folder):
@@ -394,6 +456,8 @@ class sample:
             command = ' '.join(command_parts)
             print(command)
             os.system(command)
+
+
 
     def parse_stringtie_output(self):
         self.assembled_transcript_FPKMs = {}
