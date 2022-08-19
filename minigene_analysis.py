@@ -47,12 +47,13 @@ class seq_run:
         self.file_barcode_mapping = defaultdict(dict)
         self.reference_names = set()
         self.expected_MD5s = minigene_utils.get_MD5s_From_file(os.path.join(data_folder, mdf_file))
+        self.reference_to_samples = defaultdict(list) #maps reference names to list of samples
+        self.merged_stringtie_gtfs = {} #maps reference names stringtie merged GTF file
         self.parse_sample_info_file()
 
         self.split_and_trim_reads()
         self.map_reads()
-        #self.assemble_transcripts()
-        # TODO: may want to merge all gtfs with stringtie after assembly and repeat quantification
+        self.assemble_transcripts()
         #minigene_utils.make_dir('tables')
         #self.make_tables('tables/20220719')
 
@@ -72,7 +73,7 @@ class seq_run:
                     file_barcode_tuples.append((f_reads, r_reads, f_bar, r_bar))
                     self.file_barcode_mapping[(f_reads, r_reads)][(f_bar, r_bar)] = sample_name
                     self.samples[sample_name] = sample(self, sample_name, f_reads, r_reads, wt_seq_name, f_bar, r_bar)
-
+                    self.reference_to_samples[wt_seq_name].append(self.samples[sample_name])
         # check that no set of files and barcodes appears twice (this would imply that 2 samples
         # with same barcodes are in the same file and thus cannot be seperated)
         assert len(file_barcode_tuples) == len(set(file_barcode_tuples))
@@ -162,11 +163,28 @@ class seq_run:
 
         for sample in self.samples.values():
             sample.assemble_transcripts_stringtie(self.assembled_folder)
-        #collect the reference and
+        for ref_name in self.reference_names:
+            merged_output = os.path.join(self.assembled_folder, ref_name + '_merged.gtf')
+            self.merged_stringtie_gtfs[ref_name] = merged_output
+            #for each reference, assemble the list of all of the stringtie output GTFs
+            samples = self.reference_to_samples[ref_name]
+            stringtie_gtfs = [sample.stringtie_out for sample in samples]
+            with open('stringtie_merge_temp.txt', 'w') as f:
+                for gtf in stringtie_gtfs:
+                    f.write(f'{gtf}\n')
+            reference_gtf = self.reference_gtf_files[ref_name]
+            #merge all gtfs
+            command_parts = ['stringtie', '--merge', '-p 4' ,f'-G {reference_gtf}',f'-o {merged_output}',
+                             'stringtie_merge_temp.txt']
+            command = ' '.join(command_parts)
+            print(command)
+            os.system(command)
+            for sample in samples:
+                sample.quantify_transcripts_stringtie(self.assembled_folder, merged_output)
 
-        for sample in self.samples.values():
-            sample.parse_stringtie_output()
-        # for ref_name in self.reference_names:
+        #for sample in self.samples.values():
+        #    sample.parse_stringtie_output()
+
 
     def make_reference_gtfs(self):
         for reference_seq_name in self.target_info:
@@ -279,7 +297,7 @@ class sample:
         # self.wt_alleles = [self.wt_seq[i] for i in self.edit_positions]
         # self.edit_alleles = [self.edited_seq[i] for i in self.edit_positions]
 
-        self.deduplicated_reads = defaultdict(int)  # map tuple of read pairs to counts, not currently used
+        #self.deduplicated_reads = defaultdict(int)  # map tuple of read pairs to counts, not currently used
 
         self.window_read_seqs = defaultdict(str)
         self.window_read_seq_counts = defaultdict(int)
@@ -326,12 +344,16 @@ class sample:
         self.mapping_log = os.path.join(mapped_folder, self.sample_name + '.log')
         self.mapped_reads_prefix = os.path.join(mapped_folder, self.sample_name)
         self.sorted_bam = os.path.join(mapped_folder, self.sample_name + 'Aligned.sortedByCoord.out.bam')
+        self.umapped_mate1 = os.path.join(mapped_folder, self.sample_name + 'Unmapped.out.mate1')
+        self.umapped_mate2 = os.path.join(mapped_folder, self.sample_name + 'Unmapped.out.mate2')
+        self.umapped_summary = os.path.join(mapped_folder, self.sample_name + '_abundant_unmapped.tsv')
+
+        #f'--sjdbGTFfile {self.ref_gtf}',
         if not minigene_utils.file_exists(self.sorted_bam):
             command_parts = ['STAR', '--genomeDir', self.genomeDir, '--alignEndsType EndToEnd',
                              '--outSAMtype BAM SortedByCoordinate',
                              '--twopassMode Basic', '--outReadsUnmapped Fastx', '--limitBAMsortRAM 10000000000',
                              '--runThreadN %d' % (self.seq_run.threads),
-                             f'--sjdbGTFfile {self.ref_gtf}',
                              '--readFilesIn %s %s' % (self.demuxed_f_reads, self.demuxed_r_reads),
                              '--outFileNamePrefix', self.mapped_reads_prefix,
                              '1>>', self.mapping_log, '2>>', self.mapping_log]
@@ -342,6 +364,8 @@ class sample:
             command = ' '.join(command_parts)
             print(command)
             os.system(command)
+        minigene_utils.summarize_abundant_read_pairs(self.umapped_mate1, self.umapped_mate2, self.umapped_summary,
+                                                     output_number=100)
         # self.mapped_pairs = functools.reduce(lambda x, y: x + y, [ int(l.rstrip('\n').split('\t')[2]) for l in pysam.idxstats(pysam.AlignmentFile(self.sorted_bam, "rb")) ])
 
     def assemble_transcripts_stringtie(self, assembled_folder):
@@ -352,6 +376,20 @@ class sample:
         self.stringtie_out = os.path.join(assembled_folder, self.sample_name + '.gtf')
         if not minigene_utils.file_exists(self.stringtie_out):
             command_parts = ['stringtie', '-o', self.stringtie_out, '--fr', '-m 50', f'-G {self.ref_gtf}',
+                             self.sorted_bam]
+            command = ' '.join(command_parts)
+            print(command)
+            os.system(command)
+
+    def quantify_transcripts_stringtie(self, assembled_folder, merged_gtf):
+        """
+        stringtie [-o <output.gtf>] [other_options] <read_alignments.bam>
+        """
+        self.stringtie_quant = os.path.join(assembled_folder, self.sample_name + '_quant.gtf')
+        self.ctab_folder = os.path.join(assembled_folder, self.sample_name)
+        minigene_utils.make_dir(self.ctab_folder)
+        if not minigene_utils.file_exists(self.stringtie_quant):
+            command_parts = ['stringtie', '-o', self.stringtie_quant, f'-b {self.ctab_folder}', '-e', '--fr', '-m 50', f'-G {merged_gtf}',
                              self.sorted_bam]
             command = ' '.join(command_parts)
             print(command)

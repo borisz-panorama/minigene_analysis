@@ -3,6 +3,7 @@ import os
 import hashlib
 import gzip
 import matplotlib.pyplot as plt
+from collections import defaultdict
 
 plt.rcParams['pdf.fonttype'] = 42 #leaves most text as actual text in PDFs, not outlines
 
@@ -114,3 +115,19 @@ def get_exon_boundaries(exon_positions):
         start, end = [int(x) for x in exon.split(',')]
         exon_boundaries.append((start, end))
     return exon_boundaries
+
+
+def summarize_abundant_read_pairs(read1_file, read2_file, output_file_name, output_number=100):
+    line_counter = 0
+    deduplicated_reads = defaultdict(int)
+    for read_f_line, read_r_line in zip(open(read1_file, mode='rt'), open(read2_file, mode='rt')):
+        if line_counter % 4 == 1:
+            fwd_read = read_f_line.strip()
+            rev_read = read_r_line.strip()
+            deduplicated_reads[(fwd_read, rev_read)] += 1
+        line_counter += 1
+    with open(output_file_name, 'w') as out_file:
+        for sequences, count in sorted(deduplicated_reads.items(), key=lambda x:x[1], reverse=True)[:output_number]:
+            out_file.write(f'{sequences[0]}\t{sequences[1]}\t{count}\n')
+
+
