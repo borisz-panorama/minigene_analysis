@@ -56,7 +56,7 @@ class seq_run:
         self.assemble_transcripts()
         self.map_reads_for_quant()
         minigene_utils.make_dir('tables')
-        self.make_tables('tables/20220719')
+        self.make_tables('tables/')
 
     def parse_sample_info_file(self, header_lines=1):
         file_barcode_tuples = []
@@ -243,17 +243,20 @@ class seq_run:
                                                                     reverse=True)]
                 for transcript in transcript_order:
                     count_table_dict[sample.ref_seq_name][transcript].append(sample.tx_counts[transcript])
-                    percent_table_dict[sample.ref_seq_name][transcript].append(100*sample.tx_counts[transcript] /
+                    if total_counts>0:
+                        percent_table_dict[sample.ref_seq_name][transcript].append(100*sample.tx_counts[transcript] /
                                                                                total_counts)
+                    else:
+                        percent_table_dict[sample.ref_seq_name][transcript].append(0)
 
         for target in count_table_dict.keys():
             count_table = pd.DataFrame(count_table_dict[target])
-            count_table.to_csv('%s_%s_splicing_analysis_counts.tsv' % (out_prefix, target), sep='\t')
+            count_table.to_csv('%s%s_splicing_analysis_counts.tsv' % (out_prefix, target), sep='\t')
             percent_table = pd.DataFrame(percent_table_dict[target])
-            percent_table.to_csv('%s_%s_splicing_analysis_percent.tsv' % (out_prefix, target), sep='\t')
-            self.stacked_bar(percent_table, f'{out_prefix}_bar.pdf', transcript_order)
+            percent_table.to_csv('%s%s_splicing_analysis_percent.tsv' % (out_prefix, target), sep='\t')
+            self.stacked_bar(percent_table, f'{out_prefix}bar.pdf', transcript_order)
             gtf_file = self.merged_stringtie_gtfs[target]
-            self.draw_isoforms(gtf_file, f'{out_prefix}_transcripts.pdf')
+            self.draw_isoforms(gtf_file, f'{out_prefix}transcripts.pdf')
 
     def stacked_bar(self, summary_df, out_name, order):
         summary_df = summary_df.sort_values(['sample name'])
@@ -263,7 +266,7 @@ class seq_run:
         bottoms = [0] * len(summary_df)
         bottoms = np.array(bottoms)
 
-        fig = plt.figure(figsize=(len(summary_df), 4))
+        fig = plt.figure(figsize=(len(summary_df)/2, 4))
         num_plots_wide = 1
         num_plots_high = 1
         plot = fig.add_subplot(num_plots_high, num_plots_wide, 1)
@@ -325,8 +328,8 @@ class seq_run:
             plot.set_yticks([])
             plot.set_ylim(0, 100)
             plot_index += 1
-        for plot in plots[:-1]:
-            plot.set_xticks([])
+        #for plot in plots[:-1]:
+        #    plot.set_xticks([])
         plt.savefig(out_file, transparent=True)
 
 class sample:
