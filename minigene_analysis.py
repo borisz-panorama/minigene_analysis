@@ -1,12 +1,11 @@
 from collections import defaultdict
-import pysam
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 import pandas as pd
-import scipy.stats as stats
 import numpy as np
 import math
-import functools
 import os
-import gzip
+import scipy.stats as stats
 
 from minigene_analysis import minigene_utils
 
@@ -56,8 +55,8 @@ class seq_run:
         self.map_reads()
         self.assemble_transcripts()
         self.map_reads_for_quant()
-        #minigene_utils.make_dir('tables')
-        #self.make_tables('tables/20220719')
+        minigene_utils.make_dir('tables')
+        self.make_tables('tables/20220719')
 
     def parse_sample_info_file(self, header_lines=1):
         file_barcode_tuples = []
@@ -150,10 +149,6 @@ class seq_run:
                 sample.demuxed_r_reads = os.path.join(cutadapt_file_out_dir, '%s_%s-%s.2.fastq' % (
                     pair_name, barcode_pair[0], barcode_pair[1]))
 
-    def collapse_identical_reads(self):
-        for sample in self.samples.values():
-            sample.collapse_identical_reads()
-
     def map_reads(self):
         minigene_utils.make_dir(self.star_index_folder)
         minigene_utils.make_dir(self.mapped_folder)
@@ -230,38 +225,37 @@ class seq_run:
                         f.write(exon_line)
 
     def make_tables(self, out_prefix):
-
         count_table_dict = defaultdict(lambda: defaultdict(list))
-
-        for sample in self.samples.values():
-            count_table_dict[sample.ref_seq_name]['sample name'].append(sample.sample_name)
-            if 'ref' in sample.assembled_transcript_rpms:
-                count_table_dict[sample.ref_seq_name]['ref RPM'].append(sample.assembled_transcript_rpms['ref'])
-                count_table_dict[sample.ref_seq_name]['ref % of total'].append(
-                    100 * sample.assembled_transcript_rpms['ref'] / (sum(sample.assembled_transcript_rpms.values())))
-            else:
-                count_table_dict[sample.ref_seq_name]['ref RPM'].append(None)
-                count_table_dict[sample.ref_seq_name]['ref % of total'].append(None)
-            if 'var' in sample.assembled_transcript_rpms:
-                count_table_dict[sample.ref_seq_name]['var RPM'].append(sample.assembled_transcript_rpms['var'])
-            else:
-                count_table_dict[sample.ref_seq_name]['var RPM'].append(None)
-            count_table_dict[sample.ref_seq_name]['total other RPM'].append(
-                sum([sample.assembled_transcript_rpms[key] for key in sample.assembled_transcript_rpms if
-                     key not in ['ref', 'var']]))
-            if 'ref' in sample.assembled_transcript_rpms and 'var' in sample.assembled_transcript_rpms:
-                count_table_dict[sample.ref_seq_name]['ref PSI'].append(100 * sample.assembled_transcript_rpms['ref'] / (
-                            sample.assembled_transcript_rpms['ref'] + sample.assembled_transcript_rpms['var']))
-            else:
-                count_table_dict[sample.ref_seq_name]['ref PSI'].append(None)
-
-            # count_table_dict[sample.wt_seq_name]['total mapped pairs'].append(sample.mapped_pairs)
+        percent_table_dict = defaultdict(lambda: defaultdict(list))
+        for reference in self.reference_to_samples:
+            tx_lists = [sample.tx_counts.keys() for sample in self.reference_to_samples[reference]]
+            all_tx =  sorted(set([item for sublist in tx_lists for item in sublist]))
+            transcript_order=None
+            for sample in self.reference_to_samples[reference]:
+                count_table_dict[sample.ref_seq_name]['sample name'].append(sample.sample_name)
+                percent_table_dict[sample.ref_seq_name]['sample name'].append(sample.sample_name)
+                total_counts = sum(sample.tx_counts.values())
+                if transcript_order is None:
+                    # i'm doing this convoluted thing to make sure iget a count  of zero for any tx not in the first
+                    # sample instead of it just being excluded
+                    all_tx_counts = [sample.tx_counts[tx] for tx in all_tx]
+                    transcript_order = [key for key, value in sorted(zip(all_tx, all_tx_counts), key=lambda x:x[1],
+                                                                    reverse=True)]
+                for transcript in transcript_order:
+                    count_table_dict[sample.ref_seq_name][transcript].append(sample.tx_counts[transcript])
+                    percent_table_dict[sample.ref_seq_name][transcript].append(100*sample.tx_counts[transcript] /
+                                                                               total_counts)
 
         for target in count_table_dict.keys():
             count_table = pd.DataFrame(count_table_dict[target])
-            count_table.to_csv('%s_%s_splicing_analysis.tsv' % (out_prefix, target), sep='\t')
+            count_table.to_csv('%s_%s_splicing_analysis_counts.tsv' % (out_prefix, target), sep='\t')
+            percent_table = pd.DataFrame(percent_table_dict[target])
+            percent_table.to_csv('%s_%s_splicing_analysis_percent.tsv' % (out_prefix, target), sep='\t')
+            self.stacked_bar(percent_table, f'{out_prefix}_bar.pdf', transcript_order)
+            gtf_file = self.merged_stringtie_gtfs[target]
+            self.draw_isoforms(gtf_file, f'{out_prefix}_transcripts.pdf')
 
-    def stacked_bar(self, summary_df, out_name, order=['reference match', 'edited match', 'indel', 'other mismatch']):
+    def stacked_bar(self, summary_df, out_name, order):
         summary_df = summary_df.sort_values(['sample name'])
         ind = np.arange(len(summary_df))  # the x locations for the groups
         width = 0.8  # the width of the bars: can also be len(x) sequence
@@ -278,7 +272,8 @@ class seq_run:
         for anno_type in order:
             # print(summary_df[anno_type].values)
             plotLayers.append(
-                plot.bar(ind, summary_df[anno_type].values, width, bottom=bottoms, color=colors[color_index],
+                plot.bar(ind, summary_df[anno_type].values, width, bottom=bottoms,
+                         color=minigene_utils.colors[color_index],
                          label=anno_type, hatch=None))
             color_index += 1
             bottoms = bottoms + np.array(summary_df[anno_type].values)
@@ -298,6 +293,41 @@ class seq_run:
         # plt.subplots_adjust(bottom=0.38, right=0.8)
         plt.savefig(out_name, transparent=True)
 
+    def draw_isoforms(self, gtf_file, out_file):
+        plt.rcParams['pdf.fonttype'] = 42  # leaves most text as actual text in PDFs, not outlines
+        plt.rc('font', **{'family': 'sans-serif', 'sans-serif': ['Helvetica']})
+
+        transcript_info = minigene_utils.gtf_to_dict(gtf_file)
+
+        num_plots_wide = 1
+        num_plots_high = len(transcript_info)
+        fig, plots = plt.subplots(num_plots_high, figsize=(10 * num_plots_wide, 1 * num_plots_high), sharex=True)
+
+        positions = np.arange(1447)
+        plot_index = 0
+        for transcript in transcript_info:
+            transcript_bottom = 35
+            CDS_width = 30
+            plot=plots[plot_index]
+            plot.plot(transcript_info[transcript]['span'],
+                      [transcript_bottom + CDS_width/2, transcript_bottom + CDS_width/2],
+                      color=minigene_utils.black)
+            exons = transcript_info[transcript]['exons']
+            for exon in exons:
+                plot.add_patch(patches.Rectangle((exon[0], transcript_bottom), 1+exon[1]-exon[0], CDS_width,
+                                                 facecolor="black", edgecolor="black", zorder=10))
+
+            plot.spines["bottom"].set_visible(False)
+            plot.spines["left"].set_visible(False)
+            plot.spines["top"].set_visible(False)
+            plot.spines["right"].set_visible(False)
+            plot.set_title(transcript)
+            plot.set_yticks([])
+            plot.set_ylim(0, 100)
+            plot_index += 1
+        for plot in plots[:-1]:
+            plot.set_xticks([])
+        plt.savefig(out_file, transparent=True)
 
 class sample:
     def __init__(self, seq_run, sample_name, f_reads_original, r_reads_original, ref_seq_name, f_bar, r_bar):
@@ -400,7 +430,8 @@ class sample:
 
         self.quant_mapping_log = os.path.join(quant_folder, self.sample_name + '.log')
         self.quant_mapped_reads_prefix = os.path.join(quant_folder, self.sample_name)
-        self.quant_sorted_bam = os.path.join(quant_folder, self.sample_name + 'Aligned.sortedByCoord.out.bam')
+        self.quant_bam = os.path.join(quant_folder, self.sample_name + 'Aligned.toTranscriptome.out.bam')
+        self.quant_sorted_bam = os.path.join(quant_folder, self.sample_name + 'Aligned.toTranscriptome.out.sorted.bam')
         self.quant_umapped_mate1 = os.path.join(quant_folder, self.sample_name + 'Unmapped.out.mate1')
         self.quant_umapped_mate2 = os.path.join(quant_folder, self.sample_name + 'Unmapped.out.mate2')
         self.quant_umapped_summary = os.path.join(quant_folder, self.sample_name + '_abundant_unmapped.tsv')
@@ -421,13 +452,17 @@ class sample:
             command = ' '.join(command_parts)
             print(command)
             os.system(command)
-            command_parts = ['samtools', 'index', self.sorted_bam]
+            command_parts = ['samtools', 'sort', f'-o {self.quant_sorted_bam}', '-m 1G', f'{self.quant_bam}']
+            command = ' '.join(command_parts)
+            print(command)
+            os.system(command)
+            command_parts = ['samtools', 'index', self.quant_sorted_bam]
             command = ' '.join(command_parts)
             print(command)
             os.system(command)
         minigene_utils.summarize_abundant_read_pairs(self.umapped_mate1, self.umapped_mate2, self.umapped_summary,
                                                      output_number=100)
-        tx_counts = minigene_utils.count_transcript_reads_from_bam(self.quant_sorted_bam)
+        self.tx_counts = minigene_utils.count_transcript_reads_from_bam(self.quant_sorted_bam)
         # self.mapped_pairs = functools.reduce(lambda x, y: x + y, [ int(l.rstrip('\n').split('\t')[2]) for l in pysam.idxstats(pysam.AlignmentFile(self.sorted_bam, "rb")) ])
 
     def assemble_transcripts_stringtie(self, assembled_folder):

@@ -141,4 +141,30 @@ def count_transcript_reads_from_bam(bam_file_path):
         for read in [r for r in transcript_mapping_reads if (not r.is_secondary)]:
             if read.is_proper_pair and read.is_read1:
                 reads_per_transcript[transcript_name] += 1
+    print(reads_per_transcript)
     return reads_per_transcript
+
+def gtf_to_dict(gtf):
+    #converts a gtf file into a dict of exon coordinates
+    transcript_info={}
+    f = open(gtf, 'r')
+    for line in f:
+        if line.startswith('#'):
+            pass
+        else:
+            seqname, source, feature, start, end, score, strand, frame, attributes = line.strip().split('\t')
+            att_dict = {}
+            split_att = attributes.strip(';').split(';')
+            split_att = [att.strip() for att in split_att]  # remove whitespace
+            for att_pair in split_att:
+                att, value = att_pair.split(' ')
+                value = value.strip('"')  # remove quotes
+                att_dict[att] = value
+            if feature == 'transcript':
+                tx_id = att_dict['transcript_id']
+                transcript_info[tx_id]={'span':(int(start), int(end)), 'exons':[]}
+            if feature == 'exon':
+                tx_id = att_dict['transcript_id']
+                transcript_info[tx_id]['exons'].append((int(start), int(end)))
+    f.close()
+    return transcript_info
