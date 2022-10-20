@@ -56,7 +56,7 @@ class seq_run:
         self.assemble_transcripts()
         self.map_reads_for_quant()
         minigene_utils.make_dir('tables')
-        self.make_tables('tables/20220719')
+        self.make_tables('tables/final')
 
     def parse_sample_info_file(self, header_lines=1):
         file_barcode_tuples = []
@@ -168,7 +168,8 @@ class seq_run:
             stringtie_gtfs = [sample.stringtie_out for sample in samples]
             with open('stringtie_merge_temp.txt', 'w') as f:
                 for gtf in stringtie_gtfs:
-                    f.write(f'{gtf}\n')
+                    if minigene_utils.lines_in_file(gtf)>0:
+                        f.write(f'{gtf}\n')
             reference_gtf = self.reference_gtf_files[ref_name]
             #merge all gtfs
             command_parts = ['stringtie', '--merge', '-p 4' ,f'-G {reference_gtf}',f'-o {merged_output}',
@@ -243,17 +244,18 @@ class seq_run:
                                                                     reverse=True)]
                 for transcript in transcript_order:
                     count_table_dict[sample.ref_seq_name][transcript].append(sample.tx_counts[transcript])
-                    percent_table_dict[sample.ref_seq_name][transcript].append(100*sample.tx_counts[transcript] /
+                    if total_counts>0:
+                        percent_table_dict[sample.ref_seq_name][transcript].append(100*sample.tx_counts[transcript] /
                                                                                total_counts)
-
-        for target in count_table_dict.keys():
-            count_table = pd.DataFrame(count_table_dict[target])
-            count_table.to_csv('%s_%s_splicing_analysis_counts.tsv' % (out_prefix, target), sep='\t')
-            percent_table = pd.DataFrame(percent_table_dict[target])
-            percent_table.to_csv('%s_%s_splicing_analysis_percent.tsv' % (out_prefix, target), sep='\t')
-            self.stacked_bar(percent_table, f'{out_prefix}_bar.pdf', transcript_order)
-            gtf_file = self.merged_stringtie_gtfs[target]
-            self.draw_isoforms(gtf_file, f'{out_prefix}_transcripts.pdf')
+                    else:
+                        percent_table_dict[sample.ref_seq_name][transcript].append(0)
+            count_table = pd.DataFrame(count_table_dict[reference])
+            count_table.to_csv('%s_%s_splicing_analysis_counts.tsv' % (out_prefix, reference), sep='\t')
+            percent_table = pd.DataFrame(percent_table_dict[reference])
+            percent_table.to_csv('%s_%s_splicing_analysis_percent.tsv' % (out_prefix, reference), sep='\t')
+            self.stacked_bar(percent_table, f'{out_prefix}_{reference}_bar.pdf', transcript_order)
+            gtf_file = self.merged_stringtie_gtfs[reference]
+            self.draw_isoforms(gtf_file, f'{out_prefix}_{reference}_transcripts.pdf')
 
     def stacked_bar(self, summary_df, out_name, order):
         summary_df = summary_df.sort_values(['sample name'])
@@ -263,18 +265,17 @@ class seq_run:
         bottoms = [0] * len(summary_df)
         bottoms = np.array(bottoms)
 
-        fig = plt.figure(figsize=(len(summary_df), 4))
+        fig = plt.figure(figsize=(len(summary_df)/2, 4))
         num_plots_wide = 1
         num_plots_high = 1
         plot = fig.add_subplot(num_plots_high, num_plots_wide, 1)
 
         color_index = 0
         for anno_type in order:
-            # print(summary_df[anno_type].values)
             plotLayers.append(
                 plot.bar(ind, summary_df[anno_type].values, width, bottom=bottoms,
-                         color=minigene_utils.colors[color_index],
-                         label=anno_type, hatch=None))
+                         color=minigene_utils.colors[color_index%len(minigene_utils.colors)],
+                         label=anno_type, hatch=minigene_utils.hatches[color_index//len(minigene_utils.colors)]))
             color_index += 1
             bottoms = bottoms + np.array(summary_df[anno_type].values)
 
@@ -306,6 +307,7 @@ class seq_run:
         positions = np.arange(1447)
         plot_index = 0
         for transcript in transcript_info:
+            tx_length = 0
             transcript_bottom = 35
             CDS_width = 30
             plot=plots[plot_index]
@@ -316,17 +318,18 @@ class seq_run:
             for exon in exons:
                 plot.add_patch(patches.Rectangle((exon[0], transcript_bottom), 1+exon[1]-exon[0], CDS_width,
                                                  facecolor="black", edgecolor="black", zorder=10))
+                tx_length += (1+exon[1]-exon[0]) #will sum over all exons to get size of expected amplicon for RT-PCR
 
             plot.spines["bottom"].set_visible(False)
             plot.spines["left"].set_visible(False)
             plot.spines["top"].set_visible(False)
             plot.spines["right"].set_visible(False)
-            plot.set_title(transcript)
+            plot.set_title(f'{transcript} ({tx_length})')
             plot.set_yticks([])
             plot.set_ylim(0, 100)
             plot_index += 1
-        for plot in plots[:-1]:
-            plot.set_xticks([])
+        #for plot in plots[:-1]:
+        #    plot.set_xticks([])
         plt.savefig(out_file, transparent=True)
 
 class sample:
@@ -364,7 +367,6 @@ class sample:
         for read_f_line, read_r_line in zip(gzip.open(self.demuxed_f_reads, mode='rt'),
                                             gzip.open(self.demuxed_r_reads, mode='rt')):
             if line_counter % 4 == 1:
-                # print(read_f_line.strip(), read_r_line.strip())
                 # may want to trim for read quality!!!!
                 fwd_read = read_f_line.strip()
                 rev_read = read_r_line.strip()
@@ -402,12 +404,12 @@ class sample:
         self.splice_junctions = os.path.join(mapped_folder, self.sample_name + 'SJ.out.tab')
         #f'--sjdbGTFfile {self.ref_gtf}',
         if not minigene_utils.file_exists(self.sorted_bam):
-            command_parts = ['STAR', '--genomeDir', self.genomeDir, '--alignEndsType EndToEnd',
+            command_parts = ['STAR', '--genomeDir', self.genomeDir, '--alignEndsType Local',
                              '--outSAMtype BAM SortedByCoordinate',
                              '--twopassMode Basic', '--outReadsUnmapped Fastx', '--limitBAMsortRAM 10000000000',
-                             f'--peOverlapNbasesMin {peOverlapNbasesMin}'
-                             f'--peOverlapMMp {peOverlapMMp}'
-                             f'--alignEndsProtrude 30 ConcordantPair',
+                             '--peOverlapNbasesMin %d' % (peOverlapNbasesMin),
+                             '--peOverlapMMp %f' % (peOverlapMMp),
+                             '--alignEndsProtrude 50 ConcordantPair',
                              '--runThreadN %d' % (self.seq_run.threads),
                              '--readFilesIn %s %s' % (self.demuxed_f_reads, self.demuxed_r_reads),
                              '--outFileNamePrefix', self.mapped_reads_prefix,
@@ -437,11 +439,12 @@ class sample:
         self.quant_umapped_summary = os.path.join(quant_folder, self.sample_name + '_abundant_unmapped.tsv')
         self.quant_splice_junctions = os.path.join(quant_folder, self.sample_name + 'SJ.out.tab')
         if not minigene_utils.file_exists(self.quant_sorted_bam):
-            command_parts = ['STAR', '--genomeDir', self.genomeDir, '--alignEndsType EndToEnd',
+            command_parts = ['STAR', '--genomeDir', self.genomeDir, '--alignEndsType Local',
                              '--outSAMtype BAM SortedByCoordinate',
                              '--quantMode TranscriptomeSAM GeneCounts',
+                             '--quantTranscriptomeBan Singleend',
                              f'--sjdbGTFfile {merged_GTF}',
-                             f'--alignEndsProtrude 30 ConcordantPair',
+                             f'--alignEndsProtrude 50 ConcordantPair',
                              '--outReadsUnmapped Fastx', '--limitBAMsortRAM 10000000000',
                              f'--peOverlapNbasesMin {peOverlapNbasesMin}'
                              f'--peOverlapMMp {peOverlapMMp}'

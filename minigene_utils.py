@@ -18,6 +18,7 @@ blue = (0,114/255.0,178/255.0)
 vermillion = (213/255.0,94/255.0,0)
 reddishPurple = (204/255.0,121/255.0,167/255.0)
 colors = [gray, orange, skyBlue, bluishGreen, blue, reddishPurple, vermillion, yellow]
+hatches = {0:None, 1:'/', 2:'O'}
 
 def reverse_complement(seq, isRNA = False):
     seq = seq.upper()
@@ -64,13 +65,11 @@ def get_MD5s_From_file(md5_file):
         md5, file = line.strip().split()
         file_to_md5[file[2:]] = md5
     f.close()
-    #print(file_to_md5)
     return file_to_md5
 
 def compute_md5(file_name):
     md5_hash = hashlib.md5()
     #log_file.write('computing md5sum for %s\n' %(file_name))
-    #print('computing md5sum for ', file_name)
     with open(file_name,"rb") as f:
         # Read and update hash in chunks of 4K
         for byte_block in iter(lambda: f.read(4096),b""):
@@ -141,9 +140,16 @@ def count_transcript_reads_from_bam(bam_file_path):
         for read in [r for r in transcript_mapping_reads if (not r.is_secondary)]:
             if read.is_proper_pair and read.is_read1:
                 reads_per_transcript[transcript_name] += 1
-    print(reads_per_transcript)
     return reads_per_transcript
 
+def lines_in_file(file_name):
+    #returns number of lines in file that are not blank or commented out.
+    with open(file_name) as f:
+        num_lines = 0
+        for line in f:
+            if not line.startswith('#') and not (line.strip()==''):
+                num_lines += 1
+        return num_lines
 def gtf_to_dict(gtf):
     #converts a gtf file into a dict of exon coordinates
     transcript_info={}
