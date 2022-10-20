@@ -294,7 +294,7 @@ class seq_run:
         plot.spines['right'].set_visible(False)
         plot.spines['top'].set_visible(False)
         # plt.subplots_adjust(bottom=0.38, right=0.8)
-        plt.savefig(out_name, transparent=True)
+        plt.savefig(out_name, transparent=True, bbox_inches='tight')
 
     def draw_isoforms(self, gtf_file, out_file):
         plt.rcParams['pdf.fonttype'] = 42  # leaves most text as actual text in PDFs, not outlines
@@ -330,7 +330,7 @@ class seq_run:
             plot_index += 1
         #for plot in plots[:-1]:
         #    plot.set_xticks([])
-        plt.savefig(out_file, transparent=True)
+        plt.savefig(out_file, transparent=True, bbox_inches='tight')
 
 class sample:
     def __init__(self, seq_run, sample_name, f_reads_original, r_reads_original, ref_seq_name, f_bar, r_bar):
@@ -405,7 +405,7 @@ class sample:
         self.splice_junctions = os.path.join(mapped_folder, self.sample_name + 'SJ.out.tab')
         #f'--sjdbGTFfile {self.ref_gtf}',
         if not minigene_utils.file_exists(self.sorted_bam):
-            command_parts = ['STAR', '--genomeDir', self.genomeDir, '--alignEndsType EndToEnd',
+            command_parts = ['STAR', '--genomeDir', self.genomeDir, '--alignEndsType Local',
                              '--outSAMtype BAM SortedByCoordinate',
                              '--twopassMode Basic', '--outReadsUnmapped Fastx', '--limitBAMsortRAM 10000000000',
                              f'--peOverlapNbasesMin {peOverlapNbasesMin}'
@@ -440,9 +440,10 @@ class sample:
         self.quant_umapped_summary = os.path.join(quant_folder, self.sample_name + '_abundant_unmapped.tsv')
         self.quant_splice_junctions = os.path.join(quant_folder, self.sample_name + 'SJ.out.tab')
         if not minigene_utils.file_exists(self.quant_sorted_bam):
-            command_parts = ['STAR', '--genomeDir', self.genomeDir, '--alignEndsType EndToEnd',
+            command_parts = ['STAR', '--genomeDir', self.genomeDir, '--alignEndsType Local',
                              '--outSAMtype BAM SortedByCoordinate',
                              '--quantMode TranscriptomeSAM GeneCounts',
+                             '--quantTranscriptomeBan Singleend',
                              f'--sjdbGTFfile {merged_GTF}',
                              f'--alignEndsProtrude 30 ConcordantPair',
                              '--outReadsUnmapped Fastx', '--limitBAMsortRAM 10000000000',
